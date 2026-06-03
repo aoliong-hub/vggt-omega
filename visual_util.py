@@ -20,6 +20,7 @@ def predictions_to_glb(
     mask_black_bg: bool = False,
     mask_white_bg: bool = False,
     show_cam: bool = True,
+    show_axes: bool = True,
     mask_sky: bool = False,
     target_dir: str | None = None,
     max_points: int = 300000,
@@ -89,7 +90,74 @@ def predictions_to_glb(
             color = tuple(int(255 * x) for x in rgba[:3])
             integrate_camera_into_scene(scene, camera_to_world, color, scene_scale)
 
-    return apply_scene_alignment(scene, extrinsics)
+    scene = apply_scene_alignment(scene, extrinsics)
+
+    if show_axes:
+        axes = create_coordinate_axes(scale=scene_scale * 0.3)
+        scene.add_geometry(axes)
+
+    return scene
+
+
+def create_coordinate_axes(scale: float = 1.0) -> trimesh.Trimesh:
+    """Create X(red), Y(green), Z(blue) axis arrows at the origin, extending in both directions."""
+    axis_length = scale
+    negative_length = scale * 0.3
+    shaft_radius = scale * 0.008
+    head_radius = scale * 0.025
+    head_length = scale * 0.08
+
+    meshes = []
+    colors = [
+        [255, 0, 0, 255],    # X - red
+        [0, 255, 0, 255],    # Y - green
+        [0, 0, 255, 255],    # Z - blue
+    ]
+    axes = [
+        np.array([1.0, 0.0, 0.0]),
+        np.array([0.0, 1.0, 0.0]),
+        np.array([0.0, 0.0, 1.0]),
+    ]
+
+    z_axis = np.array([0.0, 0.0, 1.0])
+
+    for axis_dir, color in zip(axes, colors):
+        # Rotation from +Z to the target axis direction
+        if np.allclose(axis_dir, z_axis):
+            rot = np.eye(3)
+        elif np.allclose(axis_dir, -z_axis):
+            rot = Rotation.from_rotvec(np.pi * np.array([1.0, 0.0, 0.0])).as_matrix()
+        else:
+            v = np.cross(z_axis, axis_dir)
+            v = v / np.linalg.norm(v)
+            c = np.dot(z_axis, axis_dir)
+            vx = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
+            rot = np.eye(3) + vx + vx @ vx * (1 - c) / (v @ v)
+
+        # Negative direction: thin cylinder from -axis_dir * negative_length to origin
+        neg = trimesh.creation.cylinder(radius=shaft_radius, height=negative_length, sections=16)
+        neg.vertices = (rot @ neg.vertices.T).T
+        neg.apply_translation(-axis_dir * negative_length / 2)
+        neg.visual.face_colors = color
+        meshes.append(neg)
+
+        # Positive shaft: cylinder from origin to (axis_length - head_length)
+        shaft_len = axis_length - head_length
+        if shaft_len > 0:
+            shaft = trimesh.creation.cylinder(radius=shaft_radius, height=shaft_len, sections=16)
+            shaft.vertices = (rot @ shaft.vertices.T).T
+            shaft.apply_translation(axis_dir * shaft_len / 2)
+            shaft.visual.face_colors = color
+            meshes.append(shaft)
+
+        # Arrow head: cone at the tip
+        head = trimesh.creation.cone(radius=head_radius, height=head_length, sections=16)
+        head.vertices = (rot @ head.vertices.T).T
+        head.apply_translation(axis_dir * shaft_len)
+        head.visual.face_colors = color
+        meshes.append(head)
+
+    return trimesh.util.concatenate(meshes)
 
 
 def _images_to_rgb(images: np.ndarray) -> np.ndarray:

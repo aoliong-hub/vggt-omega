@@ -103,6 +103,14 @@ def unproject_depth_map_to_point_map(depth_map: np.ndarray, extrinsic: np.ndarra
     )
 
 
+def format_camera_positions(extrinsic: np.ndarray) -> np.ndarray:
+    num_frames = extrinsic.shape[0]
+    result = np.zeros((num_frames, 4))
+    result[:, 0] = np.arange(num_frames)
+    result[:, 1:] = extrinsic[:, :3, 3]
+    return result
+
+
 def file_path(file_data) -> str:
     if isinstance(file_data, dict):
         if "name" in file_data:
@@ -160,9 +168,9 @@ def handle_uploads(input_video, input_images, video_sample_fps=1.0):
 
 def update_gallery_on_upload(input_video, input_images, video_sample_fps):
     if not input_video and not input_images:
-        return None, "None", None, "Upload images or a video."
+        return None, "None", None, "Upload images or a video.", None
     target_dir, image_paths = handle_uploads(input_video, input_images, video_sample_fps)
-    return None, target_dir, image_paths, "Upload complete. Click Reconstruct."
+    return None, target_dir, image_paths, "Upload complete. Click Reconstruct.", None
 
 
 def gradio_demo(
@@ -190,6 +198,8 @@ def gradio_demo(
     predictions = run_model(target_dir, model, image_resolution)
     prediction_save_path = os.path.join(target_dir, "predictions.npz")
     np.savez(prediction_save_path, **predictions)
+
+    camera_positions = format_camera_positions(predictions["extrinsic"])
 
     glbfile = glb_path(
         target_dir,
@@ -219,6 +229,7 @@ def gradio_demo(
     return (
         glbfile,
         f"Reconstruction complete: {len(all_files)} frames.",
+        camera_positions,
     )
 
 
@@ -248,13 +259,16 @@ def update_visualization(
     max_points_k,
 ):
     if not target_dir or target_dir == "None" or not os.path.isdir(target_dir):
-        return None, "No reconstruction available. Click Reconstruct first."
+        return None, "No reconstruction available. Click Reconstruct first.", None
 
     predictions_path = os.path.join(target_dir, "predictions.npz")
     if not os.path.exists(predictions_path):
-        return None, "No reconstruction available. Click Reconstruct first."
+        return None, "No reconstruction available. Click Reconstruct first.", None
 
     conf_thres = max(3.0, float(conf_thres))
+
+    with np.load(predictions_path) as loaded:
+        camera_positions = format_camera_positions(loaded["extrinsic"])
 
     glbfile = glb_path(
         target_dir,
@@ -280,7 +294,7 @@ def update_visualization(
         )
         scene.export(file_obj=glbfile)
 
-    return glbfile, "Visualization updated."
+    return glbfile, "Visualization updated.", camera_positions
 
 
 def clear_model3d():
@@ -315,7 +329,7 @@ def build_ui(model: VGGTOmega, image_resolution: int):
         mask_sky,
         max_points_k,
     ):
-        return gradio_demo(
+        glbfile, log_msg, cam_pos = gradio_demo(
             target_dir,
             model,
             image_resolution,
@@ -326,6 +340,7 @@ def build_ui(model: VGGTOmega, image_resolution: int):
             mask_sky,
             max_points_k,
         )
+        return glbfile, log_msg, cam_pos
 
     theme = gr.themes.Ocean()
     theme.set(
@@ -407,12 +422,17 @@ def build_ui(model: VGGTOmega, image_resolution: int):
                         elem_classes=["custom-log"],
                     )
                     reconstruction_output = gr.Model3D(height=780, zoom_speed=0.2, pan_speed=0.2)
+                    camera_position_output = gr.Dataframe(
+                        headers=["Frame", "X", "Y", "Z"],
+                        label="Camera Positions",
+                        interactive=False,
+                    )
 
                 with gr.Row():
                     submit_btn = gr.Button("Reconstruct", scale=1, variant="primary")
                     update_visual_btn = gr.Button("Update Visual", scale=1)
                     clear_btn = gr.ClearButton(
-                        [input_video, input_images, reconstruction_output, log_output, target_dir_output, image_gallery],
+                        [input_video, input_images, reconstruction_output, log_output, target_dir_output, image_gallery, camera_position_output],
                         scale=1,
                     )
 
@@ -457,7 +477,7 @@ def build_ui(model: VGGTOmega, image_resolution: int):
             max_points_k,
         ):
             target_dir, image_paths = handle_uploads(input_video, input_images, video_sample_fps)
-            glbfile, log_msg = reconstruct(
+            glbfile, log_msg, cam_pos = reconstruct(
                 target_dir,
                 conf_thres,
                 mask_black_bg,
@@ -466,7 +486,7 @@ def build_ui(model: VGGTOmega, image_resolution: int):
                 mask_sky,
                 max_points_k,
             )
-            return glbfile, log_msg, target_dir, image_paths
+            return glbfile, log_msg, cam_pos, target_dir, image_paths
 
         gr.Markdown("Click any row to load an example.")
 
@@ -486,6 +506,7 @@ def build_ui(model: VGGTOmega, image_resolution: int):
             outputs=[
                 reconstruction_output,
                 log_output,
+                camera_position_output,
                 target_dir_output,
                 image_gallery,
             ],
@@ -497,17 +518,17 @@ def build_ui(model: VGGTOmega, image_resolution: int):
         input_video.change(
             fn=update_gallery_on_upload,
             inputs=[input_video, input_images, video_sample_fps],
-            outputs=[reconstruction_output, target_dir_output, image_gallery, log_output],
+            outputs=[reconstruction_output, target_dir_output, image_gallery, log_output, camera_position_output],
         )
         input_images.change(
             fn=update_gallery_on_upload,
             inputs=[input_video, input_images, video_sample_fps],
-            outputs=[reconstruction_output, target_dir_output, image_gallery, log_output],
+            outputs=[reconstruction_output, target_dir_output, image_gallery, log_output, camera_position_output],
         )
         video_sample_fps.change(
             fn=update_gallery_on_upload,
             inputs=[input_video, input_images, video_sample_fps],
-            outputs=[reconstruction_output, target_dir_output, image_gallery, log_output],
+            outputs=[reconstruction_output, target_dir_output, image_gallery, log_output, camera_position_output],
         )
 
         submit_btn.click(fn=clear_model3d, inputs=[], outputs=[reconstruction_output]).then(
@@ -525,7 +546,7 @@ def build_ui(model: VGGTOmega, image_resolution: int):
                 mask_sky,
                 max_points_k,
             ],
-            outputs=[reconstruction_output, log_output],
+            outputs=[reconstruction_output, log_output, camera_position_output],
         )
 
         update_visual_btn.click(fn=update_visual_log, inputs=[], outputs=[log_output]).then(
@@ -539,7 +560,7 @@ def build_ui(model: VGGTOmega, image_resolution: int):
                 mask_sky,
                 max_points_k,
             ],
-            outputs=[reconstruction_output, log_output],
+            outputs=[reconstruction_output, log_output, camera_position_output],
         )
 
     return demo
@@ -550,7 +571,7 @@ def parse_args():
     parser.add_argument("--checkpoint", required=True, help="Local VGGT-Omega checkpoint path.")
     parser.add_argument("--image-resolution", type=int, default=512, help="Input image resolution. Default: 512.")
     parser.add_argument("--server-name", default="0.0.0.0")
-    parser.add_argument("--server-port", type=int, default=7860)
+    parser.add_argument("--server-port", type=int, default=8001)
     parser.add_argument("--share", action="store_true")
     return parser.parse_args()
 
