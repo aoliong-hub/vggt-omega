@@ -84,11 +84,17 @@ def predictions_to_glb(
 
     if show_cam:
         colormap = colormaps.get_cmap("gist_rainbow")
+        num_cameras = len(extrinsics)
         for i, world_to_camera in enumerate(extrinsics):
             camera_to_world = np.linalg.inv(world_to_camera)
-            rgba = colormap(i / max(len(extrinsics), 1))
+            is_last = (i == num_cameras - 1)
+            rgba = colormap(i / max(num_cameras, 1))
             color = tuple(int(255 * x) for x in rgba[:3])
-            integrate_camera_into_scene(scene, camera_to_world, color, scene_scale)
+            if is_last:
+                integrate_camera_into_scene(scene, camera_to_world, (255, 255, 255), scene_scale)
+                integrate_dotted_camera_into_scene(scene, camera_to_world, scene_scale)
+            else:
+                integrate_camera_into_scene(scene, camera_to_world, color, scene_scale)
 
     scene = apply_scene_alignment(scene, extrinsics)
 
@@ -219,6 +225,37 @@ def integrate_camera_into_scene(scene: trimesh.Scene, transform: np.ndarray, fac
     camera_mesh = trimesh.Trimesh(vertices=vertices, faces=compute_camera_faces(camera_cone_shape))
     camera_mesh.visual.face_colors[:, :3] = face_colors
     scene.add_geometry(camera_mesh)
+
+
+def integrate_dotted_camera_into_scene(scene: trimesh.Scene, transform: np.ndarray, scene_scale: float):
+    """Mark a camera frustum by placing white spheres at the apex and four corners."""
+    cam_width = scene_scale * 0.05
+    cam_height = scene_scale * 0.1
+
+    hw = cam_width
+    points = np.array([
+        [0.0, 0.0, 0.0],
+        [-hw, -hw, -cam_height],
+        [ hw, -hw, -cam_height],
+        [ hw,  hw, -cam_height],
+        [-hw,  hw, -cam_height],
+    ])
+
+    opengl = get_opengl_conversion_matrix()
+    cam_tf = transform @ opengl
+
+    dot_radius = scene_scale * 0.008
+    color = [255, 255, 255, 255]
+
+    meshes = []
+    for p in points:
+        world_p = (cam_tf @ np.append(p, 1.0))[:3]
+        sphere = trimesh.creation.icosphere(subdivisions=1, radius=dot_radius)
+        sphere.apply_translation(world_p)
+        sphere.visual.face_colors = color
+        meshes.append(sphere)
+
+    scene.add_geometry(trimesh.util.concatenate(meshes))
 
 
 def apply_scene_alignment(scene: trimesh.Scene, extrinsics: np.ndarray) -> trimesh.Scene:
